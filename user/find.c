@@ -6,20 +6,20 @@
 
 char* lastname_of(char *path)
 {
-  static char buf[DIRSIZ+1];
-  char *p;
+	static char buf[DIRSIZ+1];
+	char *p;
 
-  // Find first character after last slash.
-  for (p=path+strlen(path); p >= path && *p != '/'; p--)
-    ;
-  p++;
+	// Find first character after last slash.
+	for (p=path+strlen(path); p >= path && *p != '/'; p--)
+		;
+	p++;
 
-  int len = strlen(p);
-  if(len >= DIRSIZ)
-    return p;
-  memmove(buf, p, len);
-  buf[len] = 0;
-  return buf;
+	int len = strlen(p);
+	if(len >= DIRSIZ)
+		return p;
+	memmove(buf, p, len);
+	buf[len] = 0;
+	return buf;
 }
 
 void dfs(char *path, char *filename) {
