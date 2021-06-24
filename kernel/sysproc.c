@@ -6,6 +6,25 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+extern uint64 get_freemem(void);
+extern uint64 get_nproc(void);
+
+uint64
+sys_sysinfo(void) {
+	uint64 addr;
+	if (argaddr(0, &addr) < 0) {
+		return -1;
+	}
+	struct proc *p = myproc();
+	struct sysinfo si;
+	si.freemem = get_freemem();
+	si.nproc = get_nproc();
+	if (copyout(p->pagetable, addr, (char *)&si, sizeof si) != 0)
+		return -1;
+	return 0;
+}
 
 uint64
 sys_exit(void)
