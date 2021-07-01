@@ -26,20 +26,17 @@ void
 procinit(void)
 {
   struct proc *p;
-  
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
-      initlock(&p->lock, "proc");
+	  initlock(&p->lock, "proc");
 
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+	  char *pa = kalloc();
+	  if (pa == 0)
+		  panic("kalloc");
+	  uint64 va = KSTACK((int) (p - proc));
+
+	  kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+	  p->kstack = va;
   }
   kvminithart();
 }
@@ -47,11 +44,11 @@ procinit(void)
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
-int
+	int
 cpuid()
 {
-  int id = r_tp();
-  return id;
+	int id = r_tp();
+	return id;
 }
 
 // Return this CPU's cpu struct.
@@ -76,13 +73,46 @@ myproc(void) {
 int
 allocpid() {
   int pid;
-  
+
   acquire(&pid_lock);
   pid = nextpid;
   nextpid = nextpid + 1;
   release(&pid_lock);
 
   return pid;
+}
+
+int mapkpagetable(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
+	if (mappages(pagetable, va, sz, pa, perm) < 0) {
+		uvmfree(pagetable, 0);
+		return -1;
+	}
+	return 0;
+}
+
+extern char etext[];  // kernel.ld sets this to end of kernel code.
+
+pagetable_t proc_kpagetable(struct proc *p) {
+	pagetable_t pagetable;
+	pagetable = uvmcreate();
+	if (pagetable == 0)
+		return 0;
+
+	if (mapkpagetable(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X) != 0) return 0;
+
+	if (mapkpagetable(pagetable, (uint64)etext, (uint64)etext, PHYSTOP - (uint64)etext, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0) return 0;
+
+	return pagetable;
 }
 
 // Look in the process table for an UNUSED proc.
@@ -121,6 +151,15 @@ found:
     return 0;
   }
 
+  p->kpagetable = proc_kpagetable(p);
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  if (mapkpagetable(p->kpagetable, p->kstack, kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W) != 0) return 0;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -128,6 +167,18 @@ found:
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
+}
+
+void proc_freekpagetable(pagetable_t pagetable, struct proc *p) {
+	uvmunmap(pagetable, UART0, 1, 0);
+	uvmunmap(pagetable, VIRTIO0, 1, 0);
+	uvmunmap(pagetable, CLINT, 0x10000 / PGSIZE, 0);
+	uvmunmap(pagetable, PLIC, 0x400000 / PGSIZE, 0);
+	uvmunmap(pagetable, KERNBASE, ((uint64)etext - KERNBASE) / PGSIZE, 0);
+	uvmunmap(pagetable, (uint64)etext, (PHYSTOP - (uint64)etext) / PGSIZE, 0);
+	uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+	uvmunmap(pagetable, p->kstack, 1, 0);
+	uvmfree(pagetable, 0);
 }
 
 // free a proc structure and the data hanging from it,
@@ -141,6 +192,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kpagetable)
+	  proc_freekpagetable(p->kpagetable, p);
+  p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -215,7 +269,7 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
+
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
@@ -369,7 +423,7 @@ exit(int status)
   acquire(&p->lock);
   struct proc *original_parent = p->parent;
   release(&p->lock);
-  
+
   // we need the parent's lock in order to wake it up from wait().
   // the parent-then-child rule says we have to lock it first.
   acquire(&original_parent->lock);
@@ -440,7 +494,7 @@ wait(uint64 addr)
       release(&p->lock);
       return -1;
     }
-    
+
     // Wait for a child to exit.
     sleep(p, &p->lock);  //DOC: wait-sleep
   }
@@ -458,12 +512,13 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
+
   c->proc = 0;
   for(;;){
+	  kvminithart();
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-    
+
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -473,7 +528,9 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+		w_satp(MAKE_SATP(p->kpagetable));
+		sfence_vma();
+		swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -481,15 +538,15 @@ scheduler(void)
 
         found = 1;
       }
-      release(&p->lock);
-    }
+	  release(&p->lock);
+	}
 #if !defined (LAB_FS)
-    if(found == 0) {
-      intr_on();
-      asm volatile("wfi");
-    }
+	if(found == 0) {
+		intr_on();
+		asm volatile("wfi");
+	}
 #else
-    ;
+	;
 #endif
   }
 }
@@ -501,16 +558,16 @@ scheduler(void)
 // be proc->intena and proc->noff, but that would
 // break in the few places where a lock is held but
 // there's no process.
-void
+	void
 sched(void)
 {
-  int intena;
-  struct proc *p = myproc();
+	int intena;
+	struct proc *p = myproc();
 
-  if(!holding(&p->lock))
-    panic("sched p->lock");
-  if(mycpu()->noff != 1)
-    panic("sched locks");
+	if(!holding(&p->lock))
+		panic("sched p->lock");
+	if(mycpu()->noff != 1)
+		panic("sched locks");
   if(p->state == RUNNING)
     panic("sched running");
   if(intr_get())
@@ -559,7 +616,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   // Must acquire p->lock in order to
   // change p->state and then call sched.
   // Once we hold p->lock, we can be
