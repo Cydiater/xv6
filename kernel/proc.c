@@ -112,6 +112,8 @@ pagetable_t proc_kpagetable(struct proc *p) {
 
 	if (mapkpagetable(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0) return 0;
 
+	if (mapkpagetable(pagetable, p->kstack, kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W) != 0) return 0;
+
 	return pagetable;
 }
 
@@ -158,7 +160,6 @@ found:
     return 0;
   }
 
-  if (mapkpagetable(p->kpagetable, p->kstack, kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W) != 0) return 0;
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
