@@ -21,6 +21,9 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+void freewalk(pagetable_t);
+pte_t* walk(pagetable_t, uint64, int);
+
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -44,7 +47,7 @@ procinit(void)
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
-	int
+int
 cpuid()
 {
 	int id = r_tp();
@@ -102,8 +105,6 @@ pagetable_t proc_kpagetable(struct proc *p) {
 
 	if (mapkpagetable(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W) != 0) return 0;
 
-	if (mapkpagetable(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W) != 0) return 0;
-
 	if (mapkpagetable(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W) != 0) return 0;
 
 	if (mapkpagetable(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X) != 0) return 0;
@@ -113,6 +114,8 @@ pagetable_t proc_kpagetable(struct proc *p) {
 	if (mapkpagetable(pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X) != 0) return 0;
 
 	if (mapkpagetable(pagetable, p->kstack, kvmpa(p->kstack), PGSIZE, PTE_R | PTE_W) != 0) return 0;
+
+	if (mapkpagetable(pagetable, TRAPFRAME, (uint64)(p->trapframe), PGSIZE, PTE_R | PTE_W)) return 0;
 
 	return pagetable;
 }
@@ -160,7 +163,6 @@ found:
     return 0;
   }
 
-
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -173,13 +175,14 @@ found:
 void proc_freekpagetable(pagetable_t pagetable, struct proc *p) {
 	uvmunmap(pagetable, UART0, 1, 0);
 	uvmunmap(pagetable, VIRTIO0, 1, 0);
-	uvmunmap(pagetable, CLINT, 0x10000 / PGSIZE, 0);
 	uvmunmap(pagetable, PLIC, 0x400000 / PGSIZE, 0);
 	uvmunmap(pagetable, KERNBASE, ((uint64)etext - KERNBASE) / PGSIZE, 0);
 	uvmunmap(pagetable, (uint64)etext, (PHYSTOP - (uint64)etext) / PGSIZE, 0);
 	uvmunmap(pagetable, TRAMPOLINE, 1, 0);
 	uvmunmap(pagetable, p->kstack, 1, 0);
-	uvmfree(pagetable, 0);
+	uvmunmap(pagetable, TRAPFRAME, 1, 0);
+	uvmunmap(pagetable, 0, PGROUNDUP(p->sz) / PGSIZE, 0);
+	freewalk(pagetable);
 }
 
 // free a proc structure and the data hanging from it,
@@ -275,6 +278,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  upgtb2kpgtb(p, p->kpagetable, 0);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -297,15 +301,45 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+	  if (PGROUNDUP(sz + n) >= PLIC)
+		  return -1;
+	  if((sz = pvmalloc(p, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = pvmdealloc(p, sz, sz + n);
   }
   p->sz = sz;
   return 0;
+}
+
+int upgtb2kpgtb(struct proc *p, pagetable_t pagetable, uint64 oldsz) {
+
+	uint64 sz = p->sz, a, pa;
+
+	if (sz >= PLIC)
+		panic("upgtb2kpgtb");
+
+	pte_t *pte;
+	uint flags;
+
+	if (oldsz > 0)
+		uvmunmap(pagetable, 0, PGROUNDUP(oldsz) / PGSIZE, 0);
+
+	for (a = 0; a < sz; a += PGSIZE) {
+		if ((pte = walk(p->pagetable, a, 0)) == 0)
+			panic("upgtb2kpgtb: pte should exist");
+		pa = PTE2PA(*pte);
+		flags = PTE_FLAGS(*pte);
+		if (flags & PTE_U)
+			flags ^= PTE_U;
+		if (mappages(pagetable, a, PGSIZE, pa, flags) != 0)
+			return -1;
+	}
+
+	return 0;
 }
 
 // Create a new process, copying the parent.
@@ -328,7 +362,13 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
+  if (upgtb2kpgtb(np, np->kpagetable, 0) != 0) {
+    freeproc(np);
+    release(&np->lock);
+	return -1;
+  }
 
   np->parent = p;
 
