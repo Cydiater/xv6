@@ -1,0 +1,6 @@
+1. a2
+2. there is no call to function f and g.
+3. 0x628
+4. 0x38
+5. HE110 World
+6. depends on the register
