@@ -104,7 +104,14 @@ sys_sigalarm(void) {
 	return 0;
 }
 
+void restore_all_reg(struct proc *p) {
+	p->trapframe->epc = p->ar.pc;
+	memmove(&p->trapframe->ra, &p->ar.ra, sizeof(uint64) * 31);
+}
+
 uint64
 sys_sigreturn(void) {
+	restore_all_reg(myproc());
+	myproc()->on_alarm = 0;
 	return 0;
 }
