@@ -13,7 +13,7 @@
 trampoline:
 .align 4
 .globl uservec
-uservec:    
+uservec:
 	#
         # trap.c sets stvec to point here, so
         # traps from user space start here,
@@ -23,7 +23,7 @@ uservec:
         # sscratch points to where the process's p->trapframe is
         # mapped into user space, at TRAPFRAME.
         #
-        
+
 	# swap a0 and sscratch
         # so that a0 is TRAPFRAME
         csrrw a0, sscratch, a0
@@ -135,7 +135,7 @@ userret:
 
 	# restore user a0, and save TRAPFRAME in sscratch
         csrrw a0, sscratch, a0
-        
+
         # return to user mode and user pc.
         # usertrapret() set up sstatus and sepc.
         sret
